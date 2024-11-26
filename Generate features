@@ -276,3 +276,460 @@ writetable(F_subjects_all, path_feat);
 if strcmp(resolution, '15m')
     save(path_avg_count, 'avg_count_line');
 end
+
+%% Analyze IPATCH features
+%  
+
+
+%% Script setting (remove when making function)
+clear all; close all;
+startup;
+resolution = '15m';
+% resolution = 'detailed';
+read_model_dem = false;
+mode_dem_type = 'logr';
+
+% Set paths
+path_feat = filepath(config.Results, ['F_' resolution '.csv']);
+path_avg_count = filepath(config.Results,  'avg_count.mat');
+path_model_dem = filepath(config.Results, ['Mdl_' resolution '.mat']);
+path_demographics = config.demographics;
+F_subjects_all = readtable(path_feat);
+load(path_avg_count);
+T_demographics = read_ipatch_demographics(path_demographics);
+
+% Color settings
+blue_color      = [0 0.4470 0.7410];
+orange_color    = [0.8500 0.3250 0.0980];
+yellow_color    = [0.9290 0.6940 0.1250];
+red_color       = [0.6350 0.0780 0.1840];
+purple_color    = [0.4940 0.1840 0.5560];
+green_color     = [0.4660 0.6740 0.1880];
+
+colors = [blue_color; orange_color; yellow_color; red_color; purple_color; green_color];
+
+activity_colors = [0.5 0.5 0.5;
+                   blue_color*0.5;
+                   blue_color;
+                   yellow_color;
+                   yellow_color*0.75;
+                   orange_color;
+                   red_color;
+                   red_color*0.75;
+                   green_color;
+                   purple_color];
+               
+%% Gather data
+
+% Table for data
+N = size(F_subjects_all,1);
+var_names = {'age','sex','exclude','diag','dem_sev','edu_lvl','stroke', ...
+    'dep','anti_dem','anti_dep','anti_psych','hypno','sedat', ...
+    'objgaitimp','faz','walkaid','mmse','subjwalk','usev2'};
+T_health = array2table(nan(N, length(var_names)));
+T_health.Properties.VariableNames = var_names;
+for i = 1:N
+    idx = find(strcmpi(T_demographics.recid, F_subjects_all.ID{i}));
+    if isempty(idx)
+        T_health.exclude(i) = 2;
+    else
+        T_health.age(i) = T_demographics.age(idx(1));
+        T_health.sex(i) = 2*strcmp(T_demographics.sex(idx(1)), 'Male') + strcmp(T_demographics.sex(idx(1)), 'Female');
+        T_health.exclude(i) = 1;
+        T_health.diag(i) =  1*strcmp(T_demographics.etioldiag(idx(1)), 'Healthy control') + ...
+            2*strcmp(T_demographics.etioldiag(idx(1)), 'Alzheimer''s disease') + ...
+            3*strcmp(T_demographics.etioldiag(idx(1)), 'Dementia with Lewy bodies') + ...
+            4*strcmp(T_demographics.etioldiag(idx(1)), 'Vascular dementia') + ...
+            5*strcmp(T_demographics.etioldiag(idx(1)), 'Mixed dementia (AD and VaD)');
+        T_health.dem_sev(i) =  1*strcmp(T_demographics.demsev(idx(1)), 'Healthy control') + ...
+            2*strcmp(T_demographics.demsev(idx(1)), 'Mild cognitive impairment (MCI)') + ...
+            3*strcmp(T_demographics.demsev(idx(1)), 'Mild dementia') + ...
+            4*strcmp(T_demographics.demsev(idx(1)), 'Moderate dementia');
+        T_health.edu_lvl(i) = T_demographics.edulvl(idx(1));
+        T_health.stroke(i) = 2*strcmp(T_demographics.stroke(idx(1)), 'Yes') + strcmp(T_demographics.stroke(idx(1)), 'No');
+        T_health.dep(i) = 2*strcmp(T_demographics.depr(idx(1)), 'Yes') + strcmp(T_demographics.depr(idx(1)), 'No');
+        T_health.anti_dem(i) = 2*strcmp(T_demographics.antidem(idx(1)), 'Yes') + strcmp(T_demographics.antidem(idx(1)), 'No');
+        T_health.anti_dep(i) = 2*strcmp(T_demographics.antidep(idx(1)), 'Yes') + strcmp(T_demographics.antidep(idx(1)), 'No');
+        T_health.anti_psych(i) = 2*strcmp(T_demographics.antipsych(idx(1)), 'Yes') + strcmp(T_demographics.antipsych(idx(1)), 'No');
+        T_health.hypno(i) = 2*strcmp(T_demographics.hypno(idx(1)), 'Yes') + strcmp(T_demographics.hypno(idx(1)), 'No');
+        T_health.sedat(i) = 2*strcmp(T_demographics.sedatpain(idx(1)), 'Yes') + strcmp(T_demographics.sedatpain(idx(1)), 'No');
+        T_health.objgaitimp(i) = 2*strcmp(T_demographics.objgaitimp(idx(1)), 'Yes') + strcmp(T_demographics.objgaitimp(idx(1)), 'No');
+        T_health.faz(i) = T_demographics.faz(idx(1));
+        T_health.walkaid(i) = 2*any(strcmp(T_demographics.walkaid(idx(1)), {'Cane', 'Crutches', 'Walker', 'Wheelchair'})) + strcmp(T_demographics.walkaid(idx(1)), 'None');
+        T_health.mmse(i) = T_demographics.mmse(idx(1));
+        T_health.subjwalk(i) = T_demographics.subjwalk(idx(1));
+        T_health.usev2(i) = T_demographics.usev2(idx(1)) + 1;
+    end
+end
+
+% Edit binary variables
+idx_nom =  find(arrayfun(@(x) all(ismember(T_health{~isnan(T_health{:,x}),x}, 0:2)), 1:size(T_health,2)));
+for i = 1:length(idx_nom)
+    T_health{T_health{:,idx_nom(i)} == 0,idx_nom(i)} = nan(1);
+    T_health{:,idx_nom(i)} = T_health{:,idx_nom(i)} - 1;
+end
+
+F_subjects_all = [T_health F_subjects_all];
+group_names = {'Healthy control', 'Alzheimer''s disease', 'Dementia with Lewy bodies', 'Vascular dementia', 'Mixed dementia (AD and VaD)'};
+
+%% Exclusion
+
+% idx_exclusion = F_subjects_all.exclude | isnan(F_subjects_all.age) | isnan(F_subjects_all.sex) | isnan(F_subjects_all.bmi) | (is_biobank & ~use_ukbb);
+idx_exclusion_separate = {F_subjects_all.exclude, isnan(F_subjects_all.age) | isnan(F_subjects_all.sex), F_subjects_all.Missing_Data_Percentage_overall > 0.25};
+exclusion_names = {'No clinical data', 'No demographics', 'Missing data'};
+fprintf('\n');
+fprintf('Number of exclusions per criteria:\n');
+excluded_i = false(size(F_subjects_all, 1), 1);
+for i = 1:length(idx_exclusion_separate)
+    excluded_g = arrayfun(@(x) sum(F_subjects_all.diag == x & idx_exclusion_separate{i} & ~excluded_i), 1:max(F_subjects_all.diag));
+    
+    fprintf('%s.', exclusion_names{i});
+    for g = 1:max(F_subjects_all.diag)
+        fprintf('%s: %.0f (%.1f %%)', group_names{g}, sum(excluded_g(g)), 100*sum(excluded_g(g))/sum(F_subjects_all.diag == g));
+        if g ~= max(F_subjects_all.diag)
+            fprintf(', ');
+        else
+            fprintf('\n');
+        end
+    end
+    
+    excluded_i = idx_exclusion_separate{i} | excluded_i;
+end
+fprintf('\n');
+idx_exclusion = any([idx_exclusion_separate{:}],2);
+
+F_subjects_all_x = F_subjects_all;
+F_subjects_all(idx_exclusion,:) = [];
+
+%% Get "per subject" table
+%  Include average features (day and night separate)
+%  TODO: all other
+
+% IDs
+IDs = unique(F_subjects_all.ID);
+
+% Feature names
+activity_types = {'lying_rest', 'lying_movement', 'upright_stand', ...
+    'upright_sporadic_walk', 'upright_walk', 'upright_moderate', ...
+    'upright_run', 'cycling', 'sitting'};
+count_types = {'intensity', 'sit2stand', 'steps', 'steps2', 'steps3'};
+F_names_txt = {'ID', 'Resolution', 'Sensor'};
+N_F_txt = length(F_names_txt);
+F_names_other = {'Date', 'Weekday', 'Missing_Data_Percentage_overall', 'Missing_Data_Percentage_day', 'Missing_Data_Percentage_night'};
+F_names_period = {'overall', 'day', 'night'};
+F_names_time = {'Mean', 'AI_5p', 'AI_10p', 'AI_25p', 'IV'};
+F_names_time = cellfun(@(d) cellfun(@(f) cellfun(@(a) [a '_' f '_' d], activity_types, 'Un', 0), F_names_time, 'Un', 0), F_names_period, 'Un', 0);
+F_names_time = [F_names_time{:}];
+F_names_count = {'Mean', 'MeanSit', 'M10', 'T_M10', 'L5', 'T_L5', 'RA', 'IV'};
+F_names_count = cellfun(@(d) cellfun(@(f) cellfun(@(c) [c '_' f '_' d], count_types, 'Un', 0), F_names_count, 'Un', 0), F_names_period, 'Un', 0);
+F_names_count = [F_names_count{:}];
+F_names = [F_names_time{:} F_names_count{:}];
+
+% Create per subject (Average, variance)
+F_names_avg = cellfun(@(x) [x '_avg'], F_names, 'Un', 0);
+F_names_var = cellfun(@(x) [x '_var'], F_names, 'Un', 0);
+F_c_num_idx = 1:size(T_health,2);
+F_a_num_idx = (1 + length(F_names_txt) + length(F_names_other) + size(T_health,2)):size(F_subjects_all,2);
+F_subjects_c_avg = arrayfun(@(x) mean(F_subjects_all{strcmp(F_subjects_all.ID, IDs(x)), F_c_num_idx}, 1, 'omitnan'), 1:length(IDs), 'Un', 0);
+F_subjects_avg = arrayfun(@(x) mean(F_subjects_all{strcmp(F_subjects_all.ID, IDs(x)), F_a_num_idx}, 1, 'omitnan'), 1:length(IDs), 'Un', 0);
+F_subjects_var = arrayfun(@(x) var(F_subjects_all{strcmp(F_subjects_all.ID, IDs(x)), F_a_num_idx}, 1, 'omitnan'), 1:length(IDs), 'Un', 0);
+F_subjects_avg = arrayfun(@(x) [IDs(x) num2cell(F_subjects_c_avg{x}) num2cell(F_subjects_avg{x}) num2cell(F_subjects_var{x})], 1:length(IDs), 'Un', 0)';
+F_subjects_avg = cell2table(vertcat(F_subjects_avg{:}));
+F_subjects_avg.Properties.VariableNames = [{'ID'} T_health.Properties.VariableNames(F_c_num_idx) F_names_avg F_names_var];
+
+%% Average plots
+avg_count_line_all = cellfun(@(x) squeeze(mean([avg_count_line{strcmp(avg_count_line(:, 1), x), 2}], 1, 'omitnan')), F_subjects_avg.ID, 'Un', 0);
+avg_count_line_diag = arrayfun(@(x) mean(cat(3, avg_count_line_all{F_subjects_avg.diag == x}), 3), 1:5, 'Un', 0);
+sem_count_line_diag = arrayfun(@(x) std(cat(3, avg_count_line_all{F_subjects_avg.diag == x}), 0, 3) / sqrt(sum(F_subjects_avg.diag == x)), 1:5, 'Un', 0);
+
+count_types = {'intensity', 'sit2stand', 'steps', 'steps2', 'steps3'};
+t = datetime('22:00', 'Format', 'HH:mm'):minutes(15):(datetime('21:45', 'Format', 'HH:mm') + days(1));
+alpha = 0.1;
+for i = 1:5
+    p_lines = cell(5,1);
+    h = figure;
+    h.Position(3:4) = [800 400];
+    centerfig(h);
+    hold all
+    for j = 1:5
+        p_lines{j} = plot(t, movmean(avg_count_line_diag{j}(:,i), 5), 'Color', colors(j, :), 'LineWidth', 1.5);
+        
+        shade(t, movmean(avg_count_line_diag{j}(:,i) - sem_count_line_diag{j}(:,i), 5), ...
+            t, movmean(avg_count_line_diag{j}(:,i) + sem_count_line_diag{j}(:,i), 5), ...
+            'Color', [colors(j,:) alpha], 'LineWidth', 0.5, 'FillType', [1 2;2 1], 'FillColor', colors(j,:), 'FillAlpha', alpha)
+    end
+    xlabel('Time')
+    ylabel(sprintf('Avg. Count [ %s ]', count_types{i}));
+    legend(horzcat([p_lines{:}]), group_names, 'Location', 'NorthWest');
+    grid minor
+    
+    % X-tick
+    xtickformat('HH:mm');
+    set(gca, 'XTickLabel', datestr(t, 'HH:MM')); 
+    numTicks = 12; % Desired number of x-ticks
+    tickIndices = round(1:(length(t)/numTicks):length(t));
+    xticks(t(tickIndices)); % Set the x-ticks to the selected indices
+    xticklabels(datestr(t(tickIndices), 'HH:MM')); % Set the x-tick labels to time format
+    
+    
+    set(gcf,'Color',[1 1 1]);
+    set( findall(h, '-property', 'fontsize'), 'fontsize', 10);
+    export_fig(gcf, ['C:\Users\andre\Dropbox\PostDoc\IPATCH-AD\scripts\figures\count_curve_' count_types{i}], '-m4', '-png', '-transparent');
+end
+
+%% Get median subject of each diagnostic group based on a single measure
+pick_var = 'intensity_Mean_overall';
+fprintf('\n');
+for i = 1:5
+    x_i = F_subjects_all.(pick_var)(F_subjects_all.diag == i);
+    id_i = F_subjects_all.ID(F_subjects_all.diag == i);
+    median_var = median(x_i);
+    obj_func = abs(x_i - median_var);
+    idx_lowest = find(obj_func == min(obj_func), 1, 'first');
+    id_lowest = id_i{idx_lowest};
+    fprintf('%s: %s\n', group_names{i}, id_lowest);
+end
+fprintf('\n');
+
+%% Data Overview Table
+[Group_T_sort, var_nom_name] = compute_group_comparison(F_subjects_avg(:, 2:end), F_subjects_avg.diag, group_names);
+[Group_T_sort_control, var_nom_name_control] = compute_group_comparison(F_subjects_avg(:, 2:end), ismember(F_subjects_avg.diag, 2:5) + 1, {'Control', 'Dementia'});
+Group_T_sorted = sortrows(Group_T_sort, 'p_all');
+Group_T_sorted_control = sortrows(Group_T_sort_control, 'p_all');
+
+%% Print overviews
+print_group_comparison(Group_T_sort(1:19, :), var_nom_name, F_subjects_avg.diag, group_names);
+
+%% Print selected features
+feat_name_print = {'lying_rest_Mean_overall', 'lying_movement_Mean_overall', 'upright_stand_Mean_overall', ...
+    'upright_sporadic_walk_Mean_overall', 'upright_walk_Mean_overall', 'upright_moderate_Mean_overall', ...
+    'upright_run_Mean_overall', 'cycling_Mean_overall', 'sitting_Mean_overall', ...
+    'intensity_Mean_overall', 'intensity_MeanSit_overall', 'intensity_M10_overall', ...
+    'intensity_T_M10_overall', 'intensity_L5_overall', 'intensity_T_L5_overall', 'intensity_RA_overall', 'intensity_IV_overall'};
+feat_name_print = cellfun(@(x) [x '_avg'], feat_name_print, 'Un', 0);
+feat_idx_print = cellfun(@(x) find(strcmp(Group_T_sort.Properties.RowNames, x)), feat_name_print);
+print_group_comparison(Group_T_sort(feat_idx_print, :), var_nom_name, F_subjects_avg.diag, group_names);
+
+%% Scatter plots
+
+% Create figure
+h = figure;
+h.Position(3:4) = [600 600];
+centerfig(h);
+hold all
+for i = 1:length(group_names)
+    scatter(F_subjects_avg.intensity_L5_day_avg(F_subjects_avg.diag == i), ...
+        F_subjects_avg.steps3_L5_day_avg(F_subjects_avg.diag == i) ./ F_subjects_avg.steps_L5_day_avg(F_subjects_avg.diag == i), ...
+        'MarkerEdgeColor', colors(i, :));
+end
+legend(group_names);
+
+%% Statistics
+%  Variable ~ 1 + age + sex + season + diag + medication + fazekas +
+%  walking_aid
+
+
+
+%% Classification with Decision trees (Summarized Data)
+
+% Select features
+F_num_start = find(ismember(F_subjects_avg.Properties.VariableNames, 'lying_rest_Mean_overall_avg'));
+idx_F = F_num_start:size(F_subjects_avg, 2);
+idx_bf = find(idx_F == find(strcmp(F_subjects_avg.Properties.VariableNames, 'intensity_Mean_overall_avg')));
+
+% Subset to train on
+subset = 'full';
+if strcmp(subset, 'full')
+    idx_in = ismember(F_subjects_avg.diag, 1:5);
+    N_subjects = sum(idx_in);
+    T_ml = F_subjects_avg(idx_in, :);
+    y_test_avg = ismember(T_ml.diag, 2:5);
+elseif strcmp(subset, 'AD_C')
+    idx_in = ismember(F_subjects_avg.diag, 1:2);
+    N_subjects = sum(idx_in);
+    T_ml = F_subjects_avg(idx_in, :);
+    y_test_avg = ismember(T_ml.diag, 2);
+elseif strcmp(subset, 'AD_DLB')
+    idx_in = ismember(F_subjects_avg.diag, 2:3);
+    N_subjects = sum(idx_in);
+    T_ml = F_subjects_avg(idx_in, :);
+    y_test_avg = ismember(T_ml.diag, 3);
+elseif strcmp(subset, 'AD_VM')
+    idx_in = ismember(F_subjects_avg.diag, [2 4 5]);
+    N_subjects = sum(idx_in);
+    T_ml = F_subjects_avg(idx_in, :);
+    y_test_avg = ismember(T_ml.diag, 4:5);
+end
+
+% Path to save
+path_model_dem = filepath(config.Results, ['Mdl_' resolution '_' subset '.mat']);
+
+%  Cross validation - leave n subject out
+IDs_model = T_ml.ID;
+rng(1);
+
+% Predictions
+y_hat_avg = zeros(N_subjects,1);
+y_hat_binary_avg = zeros(N_subjects,1);
+y_hat_bf = zeros(N_subjects,1);
+y_hat_binary_bf = zeros(N_subjects,1);
+
+% Weights
+classWeights = ones(size(y_test_avg));
+classWeights(y_test_avg == 0) = length(y_test_avg) / sum(y_test_avg == 0);
+classWeights(y_test_avg == 1) = length(y_test_avg) / sum(y_test_avg == 1);
+
+% Models
+Mdls = cell(N_subjects, 1);
+Mdls_bf = cell(N_subjects, 1);
+f_select_all = cell(N_subjects, 1);
+
+if read_model_dem && exist(path_model_dem, 'file')
+    load(path_model_dem);
+else
+    for cv = 1:N_subjects
+        fprintf('Progress %.0f / %0.f.\n', cv, N_subjects);
+        train_idx = [1:(cv - 1), (cv + 1):N_subjects];
+        test_idx = cv;
+        X_train = T_ml{train_idx, idx_F};
+        X_test = T_ml{test_idx, idx_F};
+        y_train = y_test_avg(train_idx);
+        y_test = y_test_avg(test_idx);
+        ID_train = T_ml.ID(train_idx);
+        ID_test = T_ml.ID(test_idx);
+        
+        % Model
+        if strcmp(mode_dem_type, 'bdt')
+            temp_tree = templateTree('NumVariablesToSample', 'all', 'MaxNumSplits',10, 'MinLeafSize',1);
+            Mdl = fitcensemble(X_train, y_train, 'NumLearningCycles', 100, 'LearnRate', 0.1, 'Learners', temp_tree, 'Weights', classWeights(train_idx), 'Prior', 'uniform');
+        elseif strcmp(mode_dem_type, 'svm')
+            Mdl = fitcsvm(X_train, y_train, 'KernelFunction', 'rbf', 'Standardize', true, 'BoxConstraint', 1000, 'KernelScale', 10000);
+        elseif strcmp(mode_dem_type, 'logr')
+            X_r = X_train;
+            X_median = median(X_r, 1, 'omitnan');
+            X_r(isnan(X_r)) = repelem(X_median, sum(isnan(X_r), 1));
+            [X_n, x_mu, x_sigma] = zscore(X_r, 0, 1);
+            X_n(isnan(X_n)) = 0;
+            [bestFeat, numFeat] = findOptimalFeatures(X_n, y_train, 20, 10, false);
+            f_select = bestFeat(1:numFeat);
+            Mdl = fitclinear(X_n(:, f_select), y_train, 'Learner', 'logistic', 'Regularization', 'ridge', 'Lambda', 0, 'ScoreTransform', 'symmetriclogit', 'Weights', classWeights(train_idx), 'Prior', 'uniform');
+        else
+            error('Select model');
+        end
+        Mdls{cv} = Mdl;
+        f_select_all{cv} = f_select;
+        
+        % Single feature model
+        Mdl_bf_sign = sign(mean(X_train(y_train, idx_bf), 'omitnan') - mean(X_train(~y_train, idx_bf), 'omitnan'));
+        Mdl_bf_T = getThreshold(X_train(:,idx_bf)*Mdl_bf_sign, y_train);
+        Mdl_bf = [Mdl_bf_T, Mdl_bf_sign];
+        Mdls_bf{cv} = Mdl_bf;
+        y_hat_binary_bf(cv) = X_test(:, idx_bf)*Mdl_bf(2) > Mdl_bf(1);
+        y_hat_bf(cv) = X_test(:, idx_bf)*Mdl_bf(2);
+        
+        % Predict on test set
+        if strcmp(mode_dem_type, 'svm')
+            X_test_n = (X_test - repmat(Mdl.Mu, size(X_test, 1), 1)) ./ repmat(Mdl.Sigma, size(X_test, 1), 1);
+            X_test_n(isnan(X_test_n)) = 0;
+            [y_hat_binary, y_hat] = predict(Mdl, X_test_n);
+        elseif strcmp(mode_dem_type, 'logr')
+            X_r = X_test;
+            X_r(isnan(X_r)) = repelem(X_median, sum(isnan(X_r), 1));
+            X_test_n = (X_r - repmat(x_mu, size(X_r, 1), 1)) ./ repmat(x_sigma, size(X_r, 1), 1);
+            X_test_n(isnan(X_test_n)) = 0;
+            [y_hat_binary, y_hat] = predict(Mdl, X_test_n(:, f_select));
+        else
+            [y_hat_binary, y_hat] = predict(Mdl, X_test);
+        end
+        
+        y_hat_avg(cv) = y_hat(:, 2);
+        y_hat_binary_avg(cv) = y_hat(:, 2) >= 0.0;
+        
+    end
+%     Save model
+    save(path_model_dem, 'y_hat_avg', 'idx_in', ...
+        'y_hat_binary_avg', 'y_test_avg', ...
+        'Mdls', 'idx_F', 'IDs_model', '-v7.3');
+end
+
+%% perf
+% Calculate performance (Per subject)
+perf_subject_rf = getPerf(y_test_avg, y_hat_binary_avg);
+[X_avg,Y_avg,T_avg,AUC_avg,OPTROCPT_avg] = perfcurve(y_test_avg,y_hat_avg,1);
+perf_subject_rf_bias = getPerf(y_test_avg, y_hat_avg >= T_avg((X_avg==OPTROCPT_avg(1))&(Y_avg==OPTROCPT_avg(2))));
+perf_subject_bf = getPerf(y_test_avg, y_hat_binary_bf);
+[Xf_avg,Yf_avg,Tf_avg,AUCf_avg,OPTROCPTf_avg] = perfcurve(y_test_avg, y_hat_bf, 1);
+perf_subject_f_bias = getPerf(y_test_avg, y_hat_bf >= Tf_avg((Xf_avg==OPTROCPTf_avg(1))&(Yf_avg==OPTROCPTf_avg(2))));
+
+
+% Display performance
+fprintf('\n\tSensitivity\tSpecificity\tAccuracy\tPrecision\tF1\n');
+fprintf('Actigraphy\t\t\t\t\t\n');
+printPerf(perf_subject_rf,size(T_ml,1),'Default Ensemble'); %fprintf('Per subject\t%.1f %%\t%.1f %%\t%.1f %%\t%.1f %%\t%.1f %%\n', 100*perf_subject_rf.recall, 100*perf_subject_rf.specificity, 100*perf_subject_rf.accuracy, 100*perf_subject_rf.precision, 100*perf_subject_rf.F1);
+printPerf(perf_subject_rf_bias,size(T_ml,1),'Optimized Ensemble'); %fprintf('Per subject\t%.1f %%\t%.1f %%\t%.1f %%\t%.1f %%\t%.1f %%\n', 100*perf_subject_rf_bias.recall, 100*perf_subject_rf_bias.specificity, 100*perf_subject_rf_bias.accuracy, 100*perf_subject_rf_bias.precision, 100*perf_subject_rf_bias.F1);
+printPerf(perf_subject_bf,size(T_ml,1),'Single Feature'); %fprintf('Per subject\t%.1f %%\t%.1f %%\t%.1f %%\t%.1f %%\t%.1f %%\n', 100*perf_subject_rf_bias.recall, 100*perf_subject_rf_bias.specificity, 100*perf_subject_rf_bias.accuracy, 100*perf_subject_rf_bias.precision, 100*perf_subject_rf_bias.F1);
+printPerf(perf_subject_f_bias,size(T_ml,1),'Optimized Single Feature'); %fprintf('Per subject\t%.1f %%\t%.1f %%\t%.1f %%\t%.1f %%\t%.1f %%\n', 100*perf_subject_rf_bias.recall, 100*perf_subject_rf_bias.specificity, 100*perf_subject_rf_bias.accuracy, 100*perf_subject_rf_bias.precision, 100*perf_subject_rf_bias.F1);
+
+h = figure;
+h.Position(3:4) = [500 500];
+centerfig(h);
+hold all
+plot(X_avg,Y_avg,'-','Color', blue_color(1,:))
+plot(Xf_avg,Yf_avg,'-','Color', orange_color(1,:))
+plot(OPTROCPT_avg(1),OPTROCPT_avg(2),'o', 'Color',blue_color(1,:))
+plot(OPTROCPTf_avg(1),OPTROCPTf_avg(2),'o', 'Color',orange_color(1,:))
+axis square
+grid minor
+xlabel('1 - Specificity')
+ylabel('Sensitivity')
+legend({sprintf('Logistic Regression - AUC: %.3f', AUC_avg), sprintf('Intensity Count [day] Avg. - AUC: %.3f', AUCf_avg)}, 'Location','SouthEast')
+title({'Actigraphy','ROC for Classification of iRBD'})
+set(gcf,'Color',[1 1 1]);
+set( findall(h, '-property', 'fontsize'), 'fontsize', 10);
+% export_fig(gcf, filepath(config.base, 'figures', ['ROC' subset '.png']), '-m4', '-png', '-transparent');
+
+%% Interpretation
+
+f_names = F_subjects_avg.Properties.VariableNames(idx_F);
+f_importance = zeros(size(f_names));
+for i = 1:length(f_select_all)
+    f_importance(f_select_all{i}) = f_importance(f_select_all{i}) + abs(Mdls{i}.Beta)';
+end
+f_importance = f_importance / length(f_select_all);
+[~, idx_sort] = sort(f_importance, 'descend');
+
+N_plot = 10;
+
+h = figure;
+h.Position(3:4) = [1000 400];
+centerfig(h);
+hold all
+bar(1:N_plot, f_importance(idx_sort(1:N_plot)));
+xtickangle(45)
+xticklabels(f_names(idx_sort(1:N_plot)))
+set(gca,'TickLabelInterpreter','none')
+set(gca,'XTick',1:N_plot);
+grid minor
+ylabel('Feature Importance');
+set(gcf,'Color',[1 1 1]);
+set( findall(h, '-property', 'fontsize'), 'fontsize', 10);
+export_fig(gcf, filepath(config.base, 'figures', ['FeatureImportance' subset '.png']), '-m4', '-png', '-transparent');
+
+%% Concatenate and write table
+
+pred_full = load(filepath(config.Results, ['Mdl_' resolution '_' 'full' '.mat']), 'y_hat_avg');
+pred_ad_c = load(filepath(config.Results, ['Mdl_' resolution '_' 'AD_C' '.mat']), 'y_hat_avg');
+pred_ad_dlb = load(filepath(config.Results, ['Mdl_' resolution '_' 'AD_DLB' '.mat']), 'y_hat_avg');
+pred_ad_vm = load(filepath(config.Results, ['Mdl_' resolution '_' 'AD_VM' '.mat']), 'y_hat_avg');
+
+T_out = F_subjects_avg;
+T_out.p_dementia_vs_control = nan(size(T_out,1),1);
+T_out.p_dementia_vs_control(pred_full.idx_in) = pred_full.y_hat_avg;
+T_out.p_ad_vs_control = nan(size(T_out,1),1);
+T_out.p_ad_vs_control(pred_ad_c.idx_in) = pred_ad_c.y_hat_avg;
+T_out.p_dlb_vs_ad = nan(size(T_out,1),1);
+T_out.p_dlb_vs_ad(pred_ad_dlb.idx_in) = pred_ad_dlb.y_hat_avg;
+T_out.p_vd_vs_ad = nan(size(T_out,1),1);
+T_out.p_vd_vs_ad(pred_ad_vm.idx_in) = pred_ad_vm.y_hat_avg;
+writetable(T_out, filepath(config.Results, 'DataFeaturesPredictions_15min.csv'));
+
