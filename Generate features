@@ -1,0 +1,278 @@
+% Generate IPATCH features
+
+% Script setting (remove when making function)
+clear all; close all;
+startup;
+resolution = '15m';
+plot_opt = 'none';
+
+% Set paths
+path_feat = filepath(config.Results, ['F_' resolution '.csv']);
+path_avg_count = filepath(config.Results,  'avg_count.mat');
+input_folder = config.(['res_' resolution]);
+f_input = dir(filepath(input_folder, '*.csv'));
+n = length(f_input);
+
+% Color settings
+blue_color      = [0 0.4470 0.7410];
+orange_color    = [0.8500 0.3250 0.0980];
+yellow_color    = [0.9290 0.6940 0.1250];
+red_color       = [0.6350 0.0780 0.1840];
+purple_color    = [0.4940 0.1840 0.5560];
+green_color     = [0.4660 0.6740 0.1880];
+
+activity_colors = [0.5 0.5 0.5;
+                   blue_color*0.5;
+                   blue_color;
+                   yellow_color;
+                   yellow_color*0.75;
+                   orange_color;
+                   red_color;
+                   red_color*0.75;
+                   green_color;
+                   purple_color];
+
+% Ipatch measurements
+activity_types = {'lying_rest', 'lying_movement', 'upright_stand', ...
+    'upright_sporadic_walk', 'upright_walk', 'upright_moderate', ...
+    'upright_run', 'cycling', 'sitting'};
+count_types = {'intensity', 'sit2stand', 'steps', 'steps2', 'steps3'};
+
+% Cell array for each subject
+IDs = cell(n, 1);
+F_subjects = cell(n, 1);
+
+% Feature names
+F_names_txt = {'ID', 'Resolution', 'Sensor'};
+N_F_txt = length(F_names_txt);
+F_names_other = {'Date', 'Weekday', 'Missing_Data_Percentage_overall', 'Missing_Data_Percentage_day', 'Missing_Data_Percentage_night'};
+F_names_period = {'overall', 'day', 'night'};
+F_names_time = {'Mean', 'AI_5p', 'AI_10p', 'AI_25p', 'IV'};
+F_names_time = cellfun(@(d) cellfun(@(f) cellfun(@(a) [a '_' f '_' d], activity_types, 'Un', 0), F_names_time, 'Un', 0), F_names_period, 'Un', 0);
+F_names_time = [F_names_time{:}];
+F_names_count = {'Mean', 'MeanSit', 'M10', 'T_M10', 'L5', 'T_L5', 'RA', 'IV'};
+F_names_count = cellfun(@(d) cellfun(@(f) cellfun(@(c) [c '_' f '_' d], count_types, 'Un', 0), F_names_count, 'Un', 0), F_names_period, 'Un', 0);
+F_names_count = [F_names_count{:}];
+F_names = [F_names_other F_names_time{:} F_names_count{:}];
+N_F = length(F_names);
+F_opt = struct();
+
+% Variable for average activity
+avg_count_line = cell(n, 2);
+
+% Get timing for wear
+path_demographics = config.demographics;
+T_demographics = read_ipatch_demographics(path_demographics);
+
+% Iterate data
+for i = 1:n
+    
+    % Filename
+    filename = f_input(i).name;
+    
+    % Meta data
+    [id, resolution_i, sensor_location_i, visit_i] = interpret_ipatch_filename(filename);
+    
+    % Load data
+    ipatch_data = read_ipatch_data(filepath(input_folder, filename));
+    sample_period = seconds(median(diff(ipatch_data.local)));
+    t_start = ipatch_data.local(1);
+    t_end = ipatch_data.local(end);
+    
+    % Adjust data if detailed format (wrong time spend)
+    if strcmp(resolution, 'detailed')
+        for idx_activity = 1:length(activity_types)
+            activity_type = activity_types{idx_activity};
+            ipatch_data.(['activity_' activity_type 'time']) = ipatch_data.(['activity_' activity_type 'time']) * sample_period;
+        end
+    end
+    
+    
+    % Weartime 
+    idx_demo = find(strcmpi(T_demographics.recid, id));
+    if ~isempty(idx_demo)
+        [t1, t2] = getIPATCHTime(T_demographics(idx_demo, :), visit_i, t_start, t_end);
+    else
+        t1 = t_start;
+        t2 = t_end;
+    end
+    idx_start = find(ipatch_data.local >= t1, 1, 'first');
+    idx_end = find(ipatch_data.local <= t2, 1, 'last');
+    ipatch_data = ipatch_data(idx_start:idx_end, :);
+    t_start = ipatch_data.local(1);
+    t_end = ipatch_data.local(end);
+    
+    % Split in periods (discard all incomplete data segments)
+    % Day (09:00 - 21:00), Night (00:00 - 06:00)
+    % Note: data segments with "general_nodata" can be discarded after.
+    idx_24h_start = find(diff(floor(datenum(ipatch_data.local) - 22/24)) == 1) + 1;
+    idx_24h_end = idx_24h_start(2:end) - 1;
+    idx_24h_start = idx_24h_start(1:end-1);
+    n_24h = length(idx_24h_start);
+    idx_periods = [idx_24h_start, idx_24h_end];
+    
+    % Create table for each day and night for subject i
+    F_i_txt = cell2table(cell(n_24h, N_F_txt));
+    F_i_txt.Properties.VariableNames = F_names_txt;
+    F_i_num = array2table(nan(n_24h, N_F));
+    F_i_num.Properties.VariableNames = F_names;
+    F_i = [F_i_txt F_i_num];
+    
+    % Average counts (only computed for 15m resulution)
+    if strcmp(resolution, '15m')
+        avg_count_line_i = nan(n_24h, 24*4, length(count_types));
+    end
+    
+    % Iterate periods
+    for j = 1:n_24h
+        
+        % Extract meta features
+        F_i.ID{j} = id;
+        F_i.Resolution{j} = resolution_i;
+        F_i.Sensor{j} = sensor_location_i;
+        F_i.Date(j) = datenum(ipatch_data.local(idx_periods(j, 1)));
+        F_i.Weekday(j) = weekday(ipatch_data.local(idx_periods(j, 1)));
+        
+        % Extract features
+        for dt = 1:length(F_names_period)
+            period_name = F_names_period{dt};
+            idx_dt_1 = idx_periods(j, 1);
+            idx_dt_2 = idx_periods(j, 2);
+            time_vec = ipatch_data.local(idx_dt_1:idx_dt_2);
+            if strcmp(period_name, 'day') % 9 - 21
+                idx_dt_2 = idx_dt_1 + (find((datenum(time_vec) - floor(datenum(time_vec(end)))) <= 21/24, 1, 'last')) - 1;
+                idx_dt_1 = idx_dt_1 + (find((datenum(time_vec) - floor(datenum(time_vec(end)))) >= 9/24, 1, 'first')) - 1;
+                time_vec = ipatch_data.local(idx_dt_1:idx_dt_2);
+            elseif strcmp(period_name, 'night') % 0 - 6
+                idx_dt_2 = idx_dt_1 + (find((datenum(time_vec) - floor(datenum(time_vec(end)))) <= 6/24, 1, 'last')) - 1;
+                idx_dt_1 = idx_dt_1 + (find((datenum(time_vec) - floor(datenum(time_vec(end)))) >= 0/24, 1, 'first')) - 1;
+                time_vec = ipatch_data.local(idx_dt_1:idx_dt_2);
+            end
+            
+            F_i.(['Missing_Data_Percentage_' period_name])(j) = mean(ipatch_data.general_no_datatime(idx_dt_1:idx_dt_2)) / sample_period;
+            adjusted_sample_period = (1 - F_i.(['Missing_Data_Percentage_' period_name])(j)) * sample_period;
+            
+            % Time features
+            for idx_activity = 1:length(activity_types)
+                activity_type = activity_types{idx_activity};
+                F_i.([activity_type '_Mean' '_' period_name])(j) = mean(ipatch_data.(['activity_' activity_type 'time'])(idx_dt_1:idx_dt_2)) / adjusted_sample_period;
+                F_i.([activity_type '_AI_5p' '_' period_name])(j) = mean(ipatch_data.(['activity_' activity_type 'time'])(idx_dt_1:idx_dt_2) > 0.05 * sample_period) * (sample_period / adjusted_sample_period);
+                F_i.([activity_type '_AI_10p' '_' period_name])(j) = mean(ipatch_data.(['activity_' activity_type 'time'])(idx_dt_1:idx_dt_2) > 0.10 * sample_period) * (sample_period / adjusted_sample_period);
+                F_i.([activity_type '_AI_25p' '_' period_name])(j) = mean(ipatch_data.(['activity_' activity_type 'time'])(idx_dt_1:idx_dt_2) > 0.25 * sample_period) * (sample_period / adjusted_sample_period);
+                F_i.([activity_type '_IV' '_' period_name])(j) = getIV(ipatch_data.(['activity_' activity_type 'time'])(idx_dt_1:idx_dt_2)) * (sample_period / adjusted_sample_period);
+            end
+            % Count features
+            for idx_count = 1:length(count_types)
+                count_type = count_types{idx_count};
+                F_i.([count_type '_Mean' '_' period_name])(j) = mean(ipatch_data.(['activity_' count_type 'count'])(idx_dt_1:idx_dt_2)) / (adjusted_sample_period / 60);
+                [M10, T_M10, L5, T_L5] = getM10(ipatch_data.(['activity_' count_type 'count'])(idx_dt_1:idx_dt_2), sample_period);
+                if isempty(L5)
+                    L5 = nan;
+                    F_i.([count_type '_T_L5' '_' period_name])(j) = nan;
+                else
+                    F_i.([count_type '_T_L5' '_' period_name])(j) = mod(datenum(time_vec(T_L5)), 1);
+                end
+                if isempty(T_M10)
+                    M10 = nan;
+                    F_i.([count_type '_T_M10' '_' period_name])(j) = nan;
+                else
+                    F_i.([count_type '_T_M10' '_' period_name])(j) = mod(datenum(time_vec(T_M10)), 1);
+                end
+                F_i.([count_type '_M10' '_' period_name])(j) = M10;
+                F_i.([count_type '_L5' '_' period_name])(j) = L5;
+                F_i.([count_type '_RA' '_' period_name])(j) = (M10 - L5) / (M10 + L5);
+                F_i.([count_type '_IV' '_' period_name])(j) = getIV(ipatch_data.(['activity_' count_type 'count'])(idx_dt_1:idx_dt_2)) * (sample_period / adjusted_sample_period);
+                
+                % Get sitting counts
+                sit_vec = ipatch_data.activity_sittingtime(idx_dt_1:idx_dt_2);
+                default_idx = idx_dt_1:idx_dt_2;
+                sit_idx = default_idx(sit_vec > (0.5 * adjusted_sample_period));
+                F_i.([count_type '_MeanSit' '_' period_name])(j) = mean(ipatch_data.(['activity_' count_type 'count'])(sit_idx)) / (adjusted_sample_period / 60);
+                
+            end
+        end
+        
+        % Average activity
+        if strcmp(resolution, '15m')
+            idx_dt_1 = idx_periods(j, 1);
+            idx_dt_2 = idx_periods(j, 2);
+            Missing_Data_P = mean(ipatch_data.general_no_datatime(idx_dt_1:idx_dt_2)) / sample_period;
+            if ((idx_dt_2 - idx_dt_1 + 1) == 24*4) && Missing_Data_P < 0.1
+                for idx_count = 1:length(count_types)
+                    
+                    % Activity average
+                    count_type = count_types{idx_count};
+                    avg_count_line_i(j, :, idx_count) = ipatch_data.(['activity_' count_type 'count'])(idx_dt_1:idx_dt_2);
+                    
+                end
+            end
+        end
+    end
+    
+    avg_count_line{i, 1} = id;
+    avg_count_line{i, 2} = avg_count_line_i;
+    
+    % Plot data
+    if strcmp(plot_opt, 'all')
+        
+        % Plot vars
+        idx_var_time = endsWith(ipatch_data.Properties.VariableNames, 'time');
+        idx_var_count = endsWith(ipatch_data.Properties.VariableNames, 'count');
+        date_start = dateshift(t_start, 'start', 'day');
+        date_end   = dateshift(t_end, 'end', 'day');
+        n_days = days(date_end - date_start);
+        
+        % Create figure
+        h = figure;
+        h.Position(3:4) = [600 800];
+        centerfig(h);
+        
+        ax_legend = subplot(n_days + 1, 1, 1);
+        ax_legend_pos = ax_legend.Position;
+        delete(ax_legend);
+        
+        % Iterate days
+        for d = 1:n_days
+            
+            idx_in_day = ipatch_data.local >= (date_start + (d - 1)) & ipatch_data.local < (date_start + d);
+            
+            subplot(n_days + 1, 1, d + 1);
+            
+            bar_plot_handle = bar(ipatch_data.local(idx_in_day) + (sample_period/2)/(60*60*24), ipatch_data{idx_in_day, idx_var_time} / (sample_period), 1, 'stacked', 'FaceColor', 'flat', 'EdgeColor', 'none');
+            for j = 1:length(bar_plot_handle)
+                bar_plot_handle(j).CData = repelem(activity_colors(j, :), size(bar_plot_handle(j).CData, 1), 1);
+            end
+            set(gca, 'YTickLabel', {});
+            set(gca, 'XTick', date_start + d - 1 + [0/24 6/24 12/24 18/24 24/24]);
+            xlim([date_start + (d-1), date_start + d]);
+            ylabel(char(date_start + d - 1, 'MMM d'));
+            
+            if d < n_days
+                set(gca, 'XTickLabel', {});
+            else
+                set(gca, 'XTickLabelMode', 'manual');
+                set(gca, 'XTickLabel', char(get(gca,'XTick'),'HH:mm'));
+            end
+        end
+        
+        legend_names = ipatch_data.Properties.VariableNames(idx_var_time);
+        legend_names(startsWith(legend_names, 'activity_')) = cellfun(@(x) x(10:end), legend_names(startsWith(legend_names, 'activity_')), 'Un', 0);
+        legend_names(endsWith(legend_names, 'time')) = cellfun(@(x) x(1:end-4), legend_names(endsWith(legend_names, 'time')), 'Un', 0);
+        ax_legend = legend(legend_names, 'Interpreter', 'none', 'box', 'off');
+        ax_legend.NumColumns = 2;
+        ax_legend.Position(1:3) = ax_legend_pos(1:3);
+        set(gcf,'Color',[1 1 1]);
+        set( findall(h, '-property', 'fontsize'), 'fontsize', 10);
+        export_fig(gcf, filepath(config.base, 'figures', ['Data_Overview_' id '.png']), '-m4', '-png', '-transparent');
+
+    end
+    F_subjects{i} = F_i;
+end
+
+F_subjects_all = vertcat(F_subjects{:});
+F_subjects_all = F_subjects_all(~all(ismissing(F_subjects_all(:,(length(F_names_txt)+1):end)), 2), :);
+writetable(F_subjects_all, path_feat);
+
+if strcmp(resolution, '15m')
+    save(path_avg_count, 'avg_count_line');
+end
